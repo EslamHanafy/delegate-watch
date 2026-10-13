@@ -61,6 +61,7 @@ are settings, not hard-coded. The defaults match the delegate relay scripts:
 | `watchPaths` | `$TMPDIR/delegate-relay`, `.orchestrator`, `.superpowers` | Folders to search for run folders. Absolute, or relative to the folder Claude Code was started in. `$TMPDIR` and `~` are expanded. |
 | `searchDepth` | `6` | How many folder levels below each watched folder to search. |
 | `maxAgeHours` | `6` | Only runs whose log changed within this many hours are shown. |
+| `timelineRows` | `20` | How many timeline events show at once. `0` fits the pane height. More rows cost a little more drawing per refresh, nothing else. |
 
 Change them any of these ways:
 
@@ -75,7 +76,8 @@ Change them any of these ways:
     "delegate-watch": {
       "watchPaths": ["$TMPDIR/delegate-relay", ".my-runs", "~/agent-runs"],
       "searchDepth": 4,
-      "maxAgeHours": 24
+      "maxAgeHours": 24,
+      "timelineRows": 30
     }
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "delegate-watch",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Live pane that watches agy, cursor-agent and opencode delegate runs while they work",
   "types": "./types/index.d.ts",
   "author": {
@@ -38,6 +38,12 @@
       "title": "Run age limit (hours)",
       "description": "Only runs whose log changed within this many hours are shown.",
       "default": 6
+    },
+    "timelineRows": {
+      "type": "number",
+      "title": "Timeline rows",
+      "description": "How many events the timeline shows at once. 0 sizes it to the pane height. Higher values draw more rows each refresh.",
+      "default": 20
     }
   }
 }

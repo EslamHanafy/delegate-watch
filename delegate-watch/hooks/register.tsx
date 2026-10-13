@@ -40,6 +40,7 @@ export const register: Register = (on, options) => {
   const asList = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : typeof v === 'string' ? v.split(/[\n,]/) : [])
   const watch = asList(options.watchPaths).map(x => x.trim()).filter(Boolean)
   const depth = Math.min(12, Math.max(1, Math.floor(Number(options.searchDepth) || 6)))
+  const timelineRows = Math.min(200, Math.max(0, Math.floor(Number(options.timelineRows ?? 20) || 0)))
   const maxMin = Math.max(1, Math.floor((Number(options.maxAgeHours) || 6) * 60))
   const data = new Map<string, Data>()
   const agents = new Map<string, Run['agent']>()
@@ -304,7 +305,7 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     const run = list.find(r => r.dir === sel)
     const isAgy = run?.agent === 'agy'
-    const rows = Math.max(4, Math.floor(((e.viewport?.rows ?? 30) - 24) * 0.7))
+    const rows = timelineRows > 0 ? timelineRows : Math.max(4, Math.floor(((e.viewport?.rows ?? 30) - 24) * 0.7))
     const keep = (x: Ev) =>
       f === 'all' || (f === 'tools' ? x.kind === 'tool' || x.kind === 'file' || x.kind === 'err' : f === 'say' ? x.kind === 'say' || x.kind === 'think' : x.kind === 'turn')
     const shown = all.filter(keep)
@@ -445,9 +446,11 @@ export const register: Register = (on, options) => {
         </Box>
 
         <Box flexDirection="column">
+          <Box marginBottom={1}>
           <Text bold dimColor>
             TIMELINE{shown.length === 0 ? '  ·  no events yet' : `  ·  ${Math.max(1, end - view.length + 1)}–${end} of ${shown.length}`}
           </Text>
+          </Box>
           {view.map((x, i) => {
             const isPath = x.kind === 'tool' || x.kind === 'file'
             const { dir, name } = isPath ? splitPath(x.text) : { dir: '', name: x.text }
