@@ -34,7 +34,10 @@ declare module 'claude-code' {
       selected: string | null
       events: Ev[]
       scroll: number
+      paused: boolean
       filter: Filter
+      rowsPref: number
+      expanded: string[]
     }
   }
 }

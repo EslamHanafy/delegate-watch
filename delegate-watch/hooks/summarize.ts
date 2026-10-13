@@ -8,6 +8,12 @@ const clip = (text: string): string => {
   return one.length > WIDTH ? `${one.slice(0, WIDTH - 1)}…` : one
 }
 
+// messages keep their full text (bounded) so the pane can expand them; the row itself truncates
+const clipLong = (text: string): string => {
+  const one = text.replace(/\s+/g, ' ').trim()
+  return one.length > 2000 ? `${one.slice(0, 1999)}…` : one
+}
+
 const detailOf = (input: unknown): string => {
   if (typeof input !== 'object' || input === null) return ''
   const o = input as Record<string, any>
@@ -48,14 +54,14 @@ export const parseLines = (lines: string[], out: Ev[], totals: Totals): void => 
         out.push({ t, kind: 'tool', tag: String(ev.part.tool), text: shorten(firstLine(detail)) })
       }
     } else if (ev.type === 'text' && typeof ev.part?.text === 'string' && ev.part.text.trim()) {
-      out.push({ t, kind: 'say', tag: 'say', text: clip(ev.part.text) })
+      out.push({ t, kind: 'say', tag: 'say', text: clipLong(ev.part.text) })
     } else if (ev.type === 'assistant' && Array.isArray(ev.message?.content)) {
       const text = ev.message.content.find((p: any) => p?.type === 'text')?.text
-      if (typeof text === 'string' && text.trim()) out.push({ t, kind: 'say', tag: 'say', text: clip(text) })
+      if (typeof text === 'string' && text.trim()) out.push({ t, kind: 'say', tag: 'say', text: clipLong(text) })
     } else if (ev.type === 'thinking') {
       if (ev.subtype === 'delta' && typeof ev.text === 'string') totals.think += ev.text
       if (ev.subtype === 'completed') {
-        if (totals.think.trim()) out.push({ t, kind: 'think', tag: 'think', text: clip(totals.think) })
+        if (totals.think.trim()) out.push({ t, kind: 'think', tag: 'think', text: clipLong(totals.think) })
         totals.think = ''
       }
     } else if (ev.type === 'tool_call' && ev.subtype === 'started' && ev.tool_call) {
@@ -238,7 +244,71 @@ export const mixOf = (evs: Ev[]): [string, number][] => {
 }
 
 const TINT: Record<string, string> = {
-  read: 'cyan', grep: '#60a5fa', glob: '#60a5fa', ls: '#60a5fa', edit: 'yellow', write: 'yellow', patch: 'yellow', apply_patch: 'yellow',
+  read: 'cyan', grep: '#60a5fa', glob: '#a78bfa', ls: '#38bdf8', edit: 'yellow', write: 'yellow', patch: 'yellow', apply_patch: 'yellow',
   shell: '#fb923c', bash: '#fb923c', turn: '#60a5fa', think: 'gray', say: 'green', await: 'gray',
 }
 export const tintOf = (tag: string): string => TINT[tag.toLowerCase()] ?? 'white'
+
+// bar weights: square-root scaled so a few huge groups do not squeeze the small ones to nothing
+export const weightOf = (n: number): number => Math.sqrt(Math.max(0, n))
+
+export type Layout = {
+  hasRuns: boolean
+  hasRun: boolean
+  isDone: boolean
+  isAgy: boolean
+  hasBlocked: boolean
+  activeProcs: number
+  helperProcs: number
+  hasNote: boolean
+  mixTags: number
+  hasSpark: boolean
+}
+
+// lines the views above the timeline occupy (root gap 1 between children), so auto rows can use exactly what is left
+export const topLines = (l: Layout): number => {
+  const parts: number[] = [1]
+  if (!l.hasRuns) parts.push(4)
+  parts.push(1)
+  if (l.hasRun) {
+    const inner: number[] = [1, 4]
+    if (!l.isDone && l.isAgy) inner.push(1 + (l.hasBlocked ? 1 : 0) + Math.max(l.activeProcs, l.hasBlocked || l.activeProcs > 0 ? 0 : 1) + l.helperProcs)
+    if (!l.isDone && !l.isAgy) inner.push(1)
+    if (l.hasNote) inner.push(1)
+    if (l.mixTags > 0) inner.push(1 + (l.mixTags > 4 ? 2 : 1))
+    if (l.hasSpark) inner.push(1)
+    parts.push(4 + inner.reduce((n, x) => n + x, 0) + inner.length - 1)
+  }
+  parts.push(1, 2)
+  return parts.reduce((n, x) => n + x, 0) + parts.length - 1 - 1
+}
+
+// an expanded message never takes more than this share of the timeline lines, so the other rows keep their place
+export const expandCap = (budget: number): number => Math.max(3, Math.floor(budget * 0.6))
+
+// the text an expanded row shows: all of it unless it would not fit in `maxLines`, then cut with a marker
+export const fitText = (text: string, maxLines: number, textCols: number): string => {
+  const room = Math.max(10, textCols) * maxLines
+  return text.length > room ? `${text.slice(0, room - 2)} …` : text
+}
+
+// terminal lines one timeline row takes: path rows have a folder line, prose wraps only when expanded
+export const rowLines = (x: Ev, isOpen: boolean, textCols: number, maxLines: number): number => {
+  if (x.kind === 'tool' || x.kind === 'file') return splitPath(x.text).dir ? 2 : 1
+  if (!isOpen) return 1
+  return Math.min(maxLines, Math.max(1, Math.ceil(x.text.length / Math.max(10, textCols))))
+}
+
+// how many of the newest rows (ending at `end`) fit in `budget` lines, at least 3
+export const fitRows = (shown: Ev[], end: number, budget: number, open: Set<string>, idOf: (x: Ev) => string, textCols: number): number => {
+  const maxLines = expandCap(budget)
+  let used = open.size > 0 ? 1 : 0
+  let n = 0
+  for (let i = end - 1; i >= 0; i--) {
+    const h = rowLines(shown[i]!, open.has(idOf(shown[i]!)), textCols, maxLines)
+    if (used + h > budget) break
+    used += h
+    n += 1
+  }
+  return Math.max(3, n)
+}

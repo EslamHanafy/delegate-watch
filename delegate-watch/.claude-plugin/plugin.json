@@ -1,6 +1,6 @@
 {
   "name": "delegate-watch",
-  "version": "0.4.2",
+  "version": "0.5.5",
   "description": "Live pane that watches agy, cursor-agent and opencode delegate runs while they work",
   "types": "./types/index.d.ts",
   "author": {
@@ -39,11 +39,17 @@
       "description": "Only runs whose log changed within this many hours are shown.",
       "default": 6
     },
+    "maxSessions": {
+      "type": "number",
+      "title": "Session chips",
+      "description": "How many of the most recent runs get a chip at the top of the pane (1 to 12).",
+      "default": 3
+    },
     "timelineRows": {
       "type": "number",
       "title": "Timeline rows",
-      "description": "How many events the timeline shows at once. 0 sizes it to the pane height. Higher values draw more rows each refresh.",
-      "default": 20
+      "description": "How many events the timeline shows at once (also adjustable with the − / + buttons in the pane, which remember your choice). 0 sizes it to the pane height. Higher values draw more rows each refresh.",
+      "default": 8
     }
   }
 }

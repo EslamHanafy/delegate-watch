@@ -6,6 +6,10 @@ agents are doing **while they work**, instead of leaving you blind until they fi
 It watches runs started by relay-style delegate scripts for **agy** (Google Antigravity),
 **cursor-agent** and **opencode**, and works in both the terminal CLI and the desktop app.
 
+It is built around the run folders written by the [delegate-skills](https://github.com/amElnagdy/delegate-skills)
+relay scripts (`/agy-delegate`, `/cursor-delegate`, `/opencode-delegate`). Install those skills to get runs
+to watch; this plugin only reads what they write.
+
 ## What you see
 
 ![The delegate-watch pane showing a running agent](docs/screenshots/pane.png)
@@ -61,7 +65,14 @@ are settings, not hard-coded. The defaults match the delegate relay scripts:
 | `watchPaths` | `$TMPDIR/delegate-relay`, `.orchestrator`, `.superpowers` | Folders to search for run folders. Absolute, or relative to the folder Claude Code was started in. `$TMPDIR` and `~` are expanded. |
 | `searchDepth` | `6` | How many folder levels below each watched folder to search. |
 | `maxAgeHours` | `6` | Only runs whose log changed within this many hours are shown. |
-| `timelineRows` | `20` | How many timeline events show at once. `0` fits the pane height. More rows cost a little more drawing per refresh, nothing else. |
+| `maxSessions` | `3` | How many of the most recent runs get a chip at the top of the pane (1 to 12). |
+| `timelineRows` | `8` | How many timeline events show at once. `0` fits the pane height. The − / + buttons in the pane change it live and remember the choice. More rows cost a little more drawing per refresh, nothing else. |
+
+In the pane itself, the **− / +** buttons next to the timeline filters change the number of timeline
+rows by 5 (down to `auto`, which fits the pane height). That choice is remembered across sessions and
+takes priority over `timelineRows`. Long thinking and message rows end in `▸`; press it to read the full
+text, `▾` to fold it again. The tool-mix bar always spans the full pane width, with bar widths
+square-root scaled so small groups stay visible (the legend shows exact counts and percentages).
 
 Change them any of these ways:
 

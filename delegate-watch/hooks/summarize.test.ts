@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { blockedOf, childrenOf, parseAgyLines, parseLines, parseStat, editsSince } from './summarize'
+import { blockedOf, childrenOf, expandCap, fitRows, fitText, topLines, weightOf, parseAgyLines, parseLines, parseStat, editsSince } from './summarize'
 
 test('opencode events become tool and say rows', () => {
   const out: any[] = []
@@ -79,4 +79,42 @@ test('real cursor events: thinking is joined, timestamps read', () => {
     totals,
   )
   expect(out.map(x => `${x.tag}:${x.t}:${x.text}`)).toEqual(['think:3:Looking at it', 'shell:4:flutter test'])
+})
+
+test('auto rows fill the lines left under the top views and ignore folded prose height', () => {
+  const tool = (t: number, text: string): any => ({ t, kind: 'tool', tag: 'read', text })
+  const evs: any[] = [
+    { t: 0, kind: 'say', tag: 'say', text: 'x'.repeat(500) },
+    tool(1, 'lib/a/b.dart'),
+    tool(2, 'lib/a/c.dart'),
+    tool(3, 'd.dart'),
+    tool(4, 'e.dart'),
+    tool(5, 'f.dart'),
+  ]
+  const id = (x: any) => String(x.t)
+  expect(fitRows(evs, 6, 6, new Set(), id, 40)).toBe(4)
+  expect(fitRows(evs, 6, 100, new Set(), id, 40)).toBe(6)
+  expect(fitRows(evs, 6, 100, new Set(['0']), id, 40)).toBe(6)
+  expect(fitRows(evs, 6, 5, new Set(['0']), id, 40)).toBe(3)
+  expect(fitRows(evs, 6, 1, new Set(), id, 40)).toBe(3)
+})
+
+test('top views height grows with the run frame', () => {
+  const base = { hasRuns: true, hasRun: false, isDone: true, isAgy: false, hasBlocked: false, activeProcs: 0, helperProcs: 0, hasNote: false, mixTags: 0, hasSpark: false }
+  const noRun = topLines(base)
+  const withRun = topLines({ ...base, hasRun: true, mixTags: 5, hasSpark: true })
+  expect(withRun).toBeGreaterThan(noRun + 10)
+  expect(weightOf(4)).toBe(2)
+})
+
+test('an expanded message is capped so it cannot push the other rows out', () => {
+  const evs: any[] = [
+    { t: 0, kind: 'say', tag: 'say', text: 'w'.repeat(1500) },
+    ...[1, 2, 3, 4, 5, 6].map(t => ({ t, kind: 'tool', tag: 'read', text: `f${t}.dart` })),
+  ]
+  const id = (x: any) => String(x.t)
+  expect(expandCap(20)).toBe(12)
+  expect(fitRows(evs, 7, 20, new Set(['0']), id, 40)).toBe(7)
+  expect(fitText('a'.repeat(100), 2, 10).endsWith('…')).toBe(true)
+  expect(fitText('short', 2, 10)).toBe('short')
 })

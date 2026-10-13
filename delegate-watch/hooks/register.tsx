@@ -3,7 +3,7 @@ import type { Register } from 'claude-code'
 
 import type { Ev, Filter, Run } from '../types'
 import {
-  MAX_EVENTS, agentOf, ago, blockedOf, childrenOf, clock, editsSince, glyph, mixOf, parseAgyLines, parseLines, parseStat, rel, spark, splitPath, startOf, tintOf,
+  MAX_EVENTS, agentOf, ago, blockedOf, childrenOf, clock, editsSince, glyph, mixOf, parseAgyLines, parseLines, parseStat, rel, expandCap, fitRows, fitText, spark, splitPath, startOf, tintOf, topLines, weightOf,
 } from './summarize'
 import type { Proc, Snap, Totals } from './summarize'
 
@@ -12,7 +12,8 @@ const POLL_MS = 2000
 const SLOW_EVERY = 4
 const FIND_EVERY = 3
 const IDLE_EVERY = 5
-const MAX_RUNS = 6
+const ROWS_STEP = 5
+const ROWS_MAX = 200
 const MAX_READ = 8 * 1024 * 1024
 const STALE_MS = 15 * 60 * 1000
 const STAT = "if [ \"$(uname)\" = Darwin ]; then xargs -0 stat -f '%m %N'; else xargs -0 stat -c '%Y %n'; fi"
@@ -21,9 +22,12 @@ const GOOD = ['success', 'completed', 'done', 'finished']
 const runs = atom({ plugin: 'delegate-watch', key: 'runs' } as const, [] as Run[])
 const selected = atom({ plugin: 'delegate-watch', key: 'selected' } as const, null as string | null)
 const events = atom({ plugin: 'delegate-watch', key: 'events' } as const, [] as Ev[])
+// scroll: 0 follows the newest event (live); n > 0 pins the view to end at event n, so new events cannot move it
 const scroll = atom({ plugin: 'delegate-watch', key: 'scroll' } as const, 0)
 const paused = atom({ plugin: 'delegate-watch', key: 'paused' } as const, false)
 const filter = atom({ plugin: 'delegate-watch', key: 'filter' } as const, 'all' as Filter)
+const expanded = atom({ plugin: 'delegate-watch', key: 'expanded' } as const, [] as string[])
+const rowsPref = atom({ plugin: 'delegate-watch', key: 'rowsPref' } as const, -1)
 
 type Data = {
   offset: number
@@ -40,7 +44,9 @@ export const register: Register = (on, options) => {
   const asList = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : typeof v === 'string' ? v.split(/[\n,]/) : [])
   const watch = asList(options.watchPaths).map(x => x.trim()).filter(Boolean)
   const depth = Math.min(12, Math.max(1, Math.floor(Number(options.searchDepth) || 6)))
-  const timelineRows = Math.min(200, Math.max(0, Math.floor(Number(options.timelineRows ?? 20) || 0)))
+  const clampRows = (n: number) => Math.min(ROWS_MAX, Math.max(0, Math.floor(n) || 0))
+  const configRows = clampRows(Number(options.timelineRows ?? 8))
+  const maxRuns = Math.min(12, Math.max(1, Math.floor(Number(options.maxSessions) || 3)))
   const maxMin = Math.max(1, Math.floor((Number(options.maxAgeHours) || 6) * 60))
   const data = new Map<string, Data>()
   const agents = new Map<string, Run['agent']>()
@@ -64,7 +70,10 @@ export const register: Register = (on, options) => {
     await update($, selected, () => null)
     await update($, scroll, () => 0)
     await update($, paused, () => false)
+    await update($, expanded, () => [])
     if ((await $.store.get('paused')) === true) await update($, paused, () => true)
+    const savedRows = await $.store.get('timelineRows')
+    await update($, rowsPref, () => (typeof savedRows === 'number' ? clampRows(savedRows) : configRows))
 
     $.clock.every(POLL_MS, async () => {
       if (isPolling || (await read($, paused))) return
@@ -105,7 +114,7 @@ export const register: Register = (on, options) => {
         }
 
         const found: Run[] = []
-        for (const c of cands.slice(0, MAX_RUNS)) {
+        for (const c of cands.slice(0, maxRuns)) {
           const files = await $.fs.list(c.dir).catch(() => [])
           const names = files.map(f => f.name)
           const logName = names.includes('agy.log') ? 'agy.log' : names.includes('events.jsonl') ? 'events.jsonl' : null
@@ -320,11 +329,31 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     const run = list.find(r => r.dir === sel)
     const isAgy = run?.agent === 'agy'
-    const rows = timelineRows > 0 ? timelineRows : Math.max(4, Math.floor(((e.viewport?.rows ?? 30) - 24) * 0.7))
+    const open = new Set(await read($, expanded))
+    const flip = (id: string) => update($, expanded, l => (l.includes(id) ? [] : [id]))
+    const stored = await read($, rowsPref)
+    const timelineRows = stored < 0 ? configRows : stored
+    const setRows = (n: number) => {
+      const v = clampRows(n)
+      void update($, rowsPref, () => v)
+      void $.store.set('timelineRows', v)
+    }
     const keep = (x: Ev) =>
       f === 'all' || (f === 'tools' ? x.kind === 'tool' || x.kind === 'file' || x.kind === 'err' : f === 'say' ? x.kind === 'say' || x.kind === 'think' : x.kind === 'turn')
     const shown = all.filter(keep)
-    const end = Math.max(0, shown.length - back)
+    const isLive = back === 0
+    const end = isLive ? shown.length : Math.min(back, shown.length)
+    const mix = mixOf(all)
+    const idOf = (x: Ev) => `${x.t}|${x.kind}|${x.text.slice(0, 48)}`
+    const used = topLines({
+      hasRuns: list.length > 0, hasRun: run !== undefined, isDone: run?.isDone ?? true, isAgy, hasBlocked: Boolean(run?.blocked),
+      activeProcs: run?.procs.filter(x => !x.isHelper).length ?? 0, helperProcs: run?.procs.filter(x => x.isHelper).length ?? 0,
+      hasNote: Boolean(run?.note), mixTags: mix.length, hasSpark: all.length > 1,
+    })
+    const cols = e.viewport?.columns ?? 60
+    const budget = (e.viewport?.rows ?? 40) - used - 1
+    const textCols = cols - 44
+    const rows = timelineRows > 0 ? timelineRows : fitRows(shown, end, budget, open, idOf, textCols)
     const view = shown.slice(Math.max(0, end - rows), end)
     const step = Math.max(1, Math.floor(rows / 2))
     const brand = { agy: '#60a5fa', cursor: '#94a3b8', opencode: '#34d399', unknown: 'gray' }
@@ -340,9 +369,13 @@ export const register: Register = (on, options) => {
       void update($, selected, () => r.dir)
       void update($, scroll, () => 0)
       void update($, events, () => [])
+      void update($, expanded, () => [])
     }
     const tab = (label: string, value: Filter) => (
-      <Button key={value} variant={f === value ? 'primary' : 'secondary'} onPress={() => update($, filter, () => value)}>
+      <Button key={value} variant={f === value ? 'primary' : 'secondary'} onPress={() => {
+        void update($, scroll, () => 0)
+        void update($, filter, () => value)
+      }}>
         {label}
       </Button>
     )
@@ -365,7 +398,6 @@ export const register: Register = (on, options) => {
         cands = []
       }
     }
-    const mix = mixOf(all)
     const mixTotal = mix.reduce((n, [, c]) => n + c, 0)
     const idleFor = run && run.lastTurn > 0 ? ago(now - run.lastTurn) : null
     const span = (run ? (run.isDone && run.finishedAt > 0 ? run.finishedAt : run.isDone ? run.updatedAt : now) : now) - (run?.startedAt ?? now)
@@ -442,14 +474,14 @@ export const register: Register = (on, options) => {
 
             {mixTotal > 0 && (
               <Box flexDirection="column">
-                <Box>
+                <Box width="100%" height={1} overflow="hidden">
                   {mix.map(([tag, n]) => (
-                    <Text key={tag} color={tintOf(tag)}>{'█'.repeat(Math.max(1, Math.round((n / mixTotal) * 40)))}</Text>
+                    <Box key={tag} flexGrow={weightOf(n)} minWidth={1} height={1} backgroundColor={tintOf(tag)} />
                   ))}
                 </Box>
                 <Box gap={2} flexWrap="wrap">
                   {mix.map(([tag, n]) => (
-                    <Text key={tag}><Text color={tintOf(tag)}>■</Text> {tag} <Text dimColor>{n}</Text></Text>
+                    <Text key={tag}><Text color={tintOf(tag)}>■</Text> {tag} <Text dimColor>{n} · {Math.round((n / mixTotal) * 100)}%</Text></Text>
                   ))}
                 </Box>
               </Box>
@@ -467,11 +499,16 @@ export const register: Register = (on, options) => {
           {tab('All', 'all')}
           {isAgy ? tab('Turns', 'turns') : tab('Tools', 'tools')}
           {isAgy ? tab('Edits', 'tools') : tab('Thoughts', 'say')}
-          <Button key="older" onPress={() => update($, scroll, n => Math.min(n + step, Math.max(0, shown.length - rows)))}>↑</Button>
-          <Button key="newer" onPress={() => update($, scroll, n => Math.max(0, n - step))}>↓</Button>
-          <Button key="live" variant={back === 0 ? 'primary' : 'secondary'} onPress={() => update($, scroll, () => 0)}>
-            {back === 0 ? '● Live' : 'Jump to live'}
+          <Button key="older" onPress={() => update($, scroll, () => Math.max(Math.min(rows, shown.length), end - step))}>↑</Button>
+          <Button key="newer" onPress={() => update($, scroll, () => (isLive || end + step >= shown.length ? 0 : end + step))}>↓</Button>
+          <Button key="live" variant={isLive ? 'primary' : 'secondary'} onPress={() => update($, scroll, () => 0)}>
+            {isLive ? '● Live' : shown.length > end ? `Jump to live (+${shown.length - end})` : 'Jump to live'}
           </Button>
+          <Box gap={1}>
+            <Button key="rows-less" onPress={() => setRows(timelineRows - ROWS_STEP)}>−</Button>
+            <Text dimColor>{timelineRows > 0 ? `${timelineRows} rows` : 'auto rows'}</Text>
+            <Button key="rows-more" onPress={() => setRows(timelineRows + ROWS_STEP)}>+</Button>
+          </Box>
         </Box>
 
         <Box flexDirection="column">
@@ -485,6 +522,9 @@ export const register: Register = (on, options) => {
             const { dir, name } = isPath ? splitPath(x.text) : { dir: '', name: x.text }
             const color = x.kind === 'err' ? 'red' : tintOf(x.tag)
             const isProse = x.kind === 'say' || x.kind === 'think' || x.kind === 'turn'
+            const id = idOf(x)
+            const isOpen = open.has(id)
+            const isLong = isProse && (x.text.length > 90 || x.text.includes('\n'))
             return (
               <Box key={`e${i}`} gap={1} marginTop={i === 0 ? 0 : 0}>
                 <Box width={e.surface === 'terminal' ? 18 : 13} flexShrink={0}>
@@ -496,9 +536,12 @@ export const register: Register = (on, options) => {
                   <Text color={color} bold>{glyph(x.kind)} </Text>
                   <Text bold inverse color={color}>{` ${x.tag.toUpperCase().slice(0, 6).padEnd(6)} `}</Text>
                 </Box>
+                <Box width={3} flexShrink={0}>
+                  {isLong ? <Button key={`x${i}`} onPress={() => flip(id)}>{isOpen ? '▾' : '▸'}</Button> : null}
+                </Box>
                 <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
-                  <Text wrap={isProse ? 'wrap' : 'truncate-end'} bold={isPath} italic={x.kind === 'think'} dimColor={isProse} color={x.kind === 'err' ? 'red' : undefined}>
-                    {name}
+                  <Text wrap={isProse && (isOpen || !isLong) ? 'wrap' : 'truncate-end'} bold={isPath} italic={x.kind === 'think'} dimColor={isProse} color={x.kind === 'err' ? 'red' : undefined}>
+                    {isOpen && timelineRows === 0 ? fitText(name, expandCap(budget), textCols) : name}
                   </Text>
                   {dir ? <Text dimColor wrap="truncate-middle">{dir}</Text> : null}
                 </Box>
