@@ -31,8 +31,24 @@ test('agy turns, blocked line and child processes', () => {
   parseAgyLines(['I1013 10:42:59.436630 1 h.go:1] URL: x:streamGenerateContent?alt=sse', 'I1013 10:48:28.5 1 h.go:1] URL: loadCodeAssist'], out, totals, 2026)
   expect(totals.turns).toBe(1)
   expect(blockedOf('x\nroot agent idle; waiting up to 3h0m0s for 1 background task(s)\n')).toContain('waiting up to 3h0m0s')
-  const ps = '10\n@@\n 10 1 05:00 agy --x\n 11 10 04:00 dotnet test foo\n 12 11 00:10 sleep 5\n 13 1 01:00 other\n'
-  expect(childrenOf(ps).length).toBe(2)
+})
+
+test('child processes: wrappers unwrapped, noise dropped, helpers last', () => {
+  const ps = [
+    '10', '@@',
+    ' 10 1 05:00 agy --x',
+    ' 11 10 04:00 /bin/bash -c set -euo pipefail; cd /Users/me/proj && flutter test test/a_test.dart',
+    ' 12 11 00:10 sleep 5',
+    ' 13 10 00:01 (bash)',
+    ' 14 10 01:11:20 /Users/me/Flutter/bin/cache/dart-sdk/bin/dart mcp-server',
+    ' 15 10 00:02 /bin/bash /var/folders/x/T/run123.sh',
+    ' 16 1 01:00 other',
+    '',
+  ].join('\n')
+  const got = childrenOf(ps)
+  expect(got.map(x => x.cmd)).toEqual(['flutter test test/a_test.dart', 'script run123.sh', 'dart mcp-server'])
+  expect(got.map(x => x.isHelper)).toEqual([false, false, true])
+  expect(got[0]!.age).toBe('4m00s')
 })
 
 test('cursor stream-json rows become say and tool rows', () => {

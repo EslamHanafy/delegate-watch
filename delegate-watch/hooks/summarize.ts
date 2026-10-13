@@ -136,8 +136,50 @@ export const blockedOf = (stderr: string): string => {
   return m ? clip(m[1] ?? '') : ''
 }
 
-// the commands running beneath the agy process, from `pgrep` pids and a `ps` listing
-export const childrenOf = (out: string): string[] => {
+export type Proc = { age: string; cmd: string; isHelper: boolean }
+
+const HELPER = /(mcp-server|language[-_]server|analysis[_-]server|VBCSCompiler|dartaotruntime|kotlin-daemon|gradle.*daemon|nodeReuse)/i
+const SHELL = /^(?:\S*\/)?(?:bash|sh|zsh|dash)(?=\s|$)/
+const PREAMBLE = [
+  /^source\s+\S+(?:\s+2>\/dev\/null)?(?:\s*\|\|\s*true)?\s*&&\s*/,
+  /^setopt\s[^&;]*?(?:\|\|\s*true)?\s*&&\s*/,
+  /^\{[^}]*\}\s*(?:>\/dev\/null\s*2>&1)?\s*(?:\|\|\s*true)?\s*&&\s*/,
+  /^eval\s+'?/,
+  /^set\s+-[a-z]+(?:\s+pipefail)?\s*[;&]+\s*/,
+  /^cd\s+\S+\s*&&\s*/,
+  /^export\s+\S+\s*[;&]+\s*/,
+]
+
+const etimeSec = (e: string): number => {
+  const [d, rest] = e.includes('-') ? e.split('-') : ['0', e]
+  const t = (rest ?? '').split(':').map(Number)
+  while (t.length < 3) t.unshift(0)
+  return Number(d) * 86400 + t[0]! * 3600 + t[1]! * 60 + t[2]!
+}
+
+const tidy = (raw: string): string => {
+  let c = raw.trim()
+  const sh = SHELL.exec(c)
+  if (sh) {
+    const rest = c.slice(sh[0].length).trim()
+    const dash = /^(?:-\w+\s+)*-c\s+([\s\S]*)$/.exec(rest)
+    if (dash) {
+      c = dash[1]!
+      for (let i = 0, prev = ''; prev !== c && i < 12; i++) {
+        prev = c
+        for (const re of PREAMBLE) c = c.replace(re, '')
+      }
+    } else if (rest) {
+      const file = rest.split(/\s+/)[0]!
+      c = `script ${file.slice(file.lastIndexOf('/') + 1)}`
+    }
+  }
+  c = c.replace(/^\/\S*\/(?=[^\s/]+(?:\s|$))/, '').replace(/\/Users\/[^/\s]+\//g, '~/')
+  return clip(c).slice(0, 110)
+}
+
+// what is running beneath the agy process, from `pgrep` pids and a `ps` listing: real commands first, long-lived helpers last
+export const childrenOf = (out: string): Proc[] => {
   const [pidPart = '', psPart = ''] = out.split('@@\n')
   const roots = new Set(pidPart.split('\n').map(x => x.trim()).filter(Boolean))
   const rows = psPart.split('\n').map(l => /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(l)).filter((m): m is RegExpExecArray => m !== null)
@@ -151,10 +193,15 @@ export const childrenOf = (out: string): string[] => {
       }
     }
   }
-  return rows
-    .filter(m => keep.has(m[1]!) && !roots.has(m[1]!) && !/^(ps|sh|pgrep)\b/.test(m[4]!))
-    .map(m => `${m[3]}  ${clip(m[4]!).slice(0, 90)}`)
-    .slice(0, 6)
+  const found = rows
+    .filter(m => keep.has(m[1]!) && !roots.has(m[1]!) && !/^\(.*\)$/.test(m[4]!.trim()))
+    .map(m => ({ sec: etimeSec(m[3]!), raw: m[4]! }))
+    .map(x => ({ ...x, cmd: tidy(x.raw) }))
+    .filter(x => x.cmd !== '' && !/^(ps|pgrep|find|sleep)\b/.test(x.cmd) && !x.raw.includes('pgrep -f'))
+    .map(x => ({ sec: x.sec, cmd: x.cmd, isHelper: HELPER.test(x.raw) }))
+  const act = found.filter(x => !x.isHelper).sort((a, b) => b.sec - a.sec).slice(0, 5)
+  const help = found.filter(x => x.isHelper).sort((a, b) => b.sec - a.sec).slice(0, 3)
+  return [...act, ...help].map(x => ({ age: ago(x.sec * 1000), cmd: x.cmd, isHelper: x.isHelper }))
 }
 
 const BARS = '▁▂▃▄▅▆▇█'

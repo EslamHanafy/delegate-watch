@@ -5,7 +5,7 @@ import type { Ev, Filter, Run } from '../types'
 import {
   MAX_EVENTS, agentOf, ago, blockedOf, childrenOf, clock, editsSince, glyph, mixOf, parseAgyLines, parseLines, parseStat, rel, spark, splitPath, startOf, tintOf,
 } from './summarize'
-import type { Snap, Totals } from './summarize'
+import type { Proc, Snap, Totals } from './summarize'
 
 const PANE = 'delegate-watch'
 const POLL_MS = 2000
@@ -33,7 +33,7 @@ type Data = {
   snap: Snap | null
   note: string
   blocked: string
-  procs: string[]
+  procs: Proc[]
 }
 
 export const register: Register = (on, options) => {
@@ -244,7 +244,7 @@ export const register: Register = (on, options) => {
           run.procs = d.procs
         }
 
-        const sig = `${sel}|${run ? data.get(run.dir)!.evs.length : 0}|${run?.blocked}|${run?.procs.join(',')}|${found.map(r => r.dir + r.status + r.updatedAt).join(',')}`
+        const sig = `${sel}|${run ? data.get(run.dir)!.evs.length : 0}|${run?.blocked}|${run?.procs.map(x => x.age + x.cmd).join(',')}|${found.map(r => r.dir + r.status + r.updatedAt).join(',')}`
         if (sig !== lastSig) {
           lastSig = sig
           await update($, runs, () => found)
@@ -403,8 +403,22 @@ export const register: Register = (on, options) => {
                   <Text color="green" bold>{idleFor ? `● Model active ${idleFor} ago` : '○ Waiting for the first model turn'}</Text>
                 )}
                 {run.blocked ? <Text dimColor>{run.blocked}</Text> : null}
-                {run.procs.map((p, i) => (
-                  <Text key={`p${i}`} dimColor wrap="truncate">{'  └ '}{p}</Text>
+                {run.procs.filter(x => !x.isHelper).length === 0 && !run.blocked ? (
+                  <Text dimColor>{'  '}no command running, the model is thinking</Text>
+                ) : null}
+                {run.procs.filter(x => !x.isHelper).map((p, i) => (
+                  <Box key={`p${i}`} gap={1}>
+                    <Text color="green">{'  ▸'}</Text>
+                    <Text dimColor>{p.age.padStart(6)}</Text>
+                    <Text wrap="truncate-end">{p.cmd}</Text>
+                  </Box>
+                ))}
+                {run.procs.filter(x => x.isHelper).map((p, i) => (
+                  <Box key={`h${i}`} gap={1}>
+                    <Text dimColor>{'  ·'}</Text>
+                    <Text dimColor>{p.age.padStart(6)}</Text>
+                    <Text dimColor wrap="truncate-end">{p.cmd} (helper)</Text>
+                  </Box>
                 ))}
               </Box>
             )}

@@ -22,7 +22,7 @@ export type Run = {
   turns: number
   lastTurn: number
   blocked: string
-  procs: string[]
+  procs: { age: string; cmd: string; isHelper: boolean }[]
 }
 
 export type Filter = 'all' | 'tools' | 'say' | 'turns'
