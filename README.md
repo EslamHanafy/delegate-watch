@@ -8,6 +8,8 @@ It watches runs started by relay-style delegate scripts for **agy** (Google Anti
 
 ## What you see
 
+![The delegate-watch pane showing a running agent](docs/screenshots/pane.png)
+
 - A chip per recent run (● running, ✓ done, ✗ failed), newest first.
 - A status card: agent badge, model, elapsed time, tool calls or model turns, files edited, cost.
 - A tool-mix bar and a 30-minute activity strip.

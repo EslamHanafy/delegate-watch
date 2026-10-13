@@ -455,8 +455,8 @@ export const register: Register = (on, options) => {
             const isProse = x.kind === 'say' || x.kind === 'think' || x.kind === 'turn'
             return (
               <Box key={`e${i}`} gap={1} marginTop={i === 0 ? 0 : 0}>
-                <Box width={20} flexShrink={0}>
-                  <Text dimColor>{x.t > 0 ? clock(x.t) : '--:--:--'} </Text>
+                <Box width={18} flexShrink={0}>
+                  <Text dimColor>{x.t > 0 ? clock(x.t) : '--:--:--'}{' '}</Text>
                   <Text color={color}>({run && x.t > 0 ? rel(x.t - run.startedAt) : '--:--'})</Text>
                 </Box>
                 <Text color={color} bold>▌</Text>
