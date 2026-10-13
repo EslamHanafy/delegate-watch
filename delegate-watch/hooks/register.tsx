@@ -59,6 +59,10 @@ export const register: Register = (on, options) => {
       description: 'Open the live delegate pane, or pause / resume the watcher',
       argumentHint: 'pause | resume',
     })
+    await update($, runs, () => [])
+    await update($, events, () => [])
+    await update($, selected, () => null)
+    await update($, scroll, () => 0)
     await update($, paused, () => false)
     if ((await $.store.get('paused')) === true) await update($, paused, () => true)
 
@@ -296,9 +300,20 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const list = await read($, runs)
+    const list: Run[] = (await read($, runs)).map((x: Partial<Run>) => ({
+      dir: String(x.dir ?? ''), name: String(x.name ?? ''), agent: x.agent ?? 'unknown', model: x.model ?? '',
+      startedAt: x.startedAt ?? 0, finishedAt: x.finishedAt ?? 0, updatedAt: x.updatedAt ?? 0,
+      status: String(x.status ?? 'running'), isDone: x.isDone ?? false, touched: x.touched ?? null,
+      tools: x.tools ?? 0, cost: x.cost ?? 0, note: x.note ?? '', turns: x.turns ?? 0, lastTurn: x.lastTurn ?? 0,
+      blocked: x.blocked ?? '',
+      procs: (Array.isArray(x.procs) ? x.procs : []).filter(
+        (q): q is Proc => typeof q === 'object' && q !== null && typeof q.age === 'string' && typeof q.cmd === 'string',
+      ),
+    }))
     const sel = await read($, selected)
-    const all = await read($, events)
+    const all: Ev[] = (await read($, events))
+      .filter((x: Partial<Ev>) => typeof x === 'object' && x !== null && typeof x.text === 'string')
+      .map((x: Ev) => ({ ...x, tag: typeof x.tag === 'string' ? x.tag : x.kind }))
     const back = await read($, scroll)
     const f = await read($, filter)
     const isPaused = await read($, paused)
