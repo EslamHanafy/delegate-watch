@@ -1,0 +1,17 @@
+{
+  "name": "delegate-watch",
+  "owner": {
+    "name": "Eslam Hanafy"
+  },
+  "plugins": [
+    {
+      "name": "delegate-watch",
+      "source": "./delegate-watch",
+      "description": "Live pane that watches agy, cursor-agent and opencode delegate runs while they work",
+      "version": "0.3.0"
+    }
+  ],
+  "metadata": {
+    "description": "Live pane for watching coding-agent delegate runs (agy, cursor-agent, opencode)"
+  }
+}

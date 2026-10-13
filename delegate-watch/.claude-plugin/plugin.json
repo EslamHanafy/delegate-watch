@@ -1,0 +1,43 @@
+{
+  "name": "delegate-watch",
+  "version": "0.3.0",
+  "description": "Live pane that watches agy, cursor-agent and opencode delegate runs while they work",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Eslam Hanafy"
+  },
+  "license": "MIT",
+  "keywords": [
+    "delegate",
+    "agy",
+    "cursor",
+    "opencode",
+    "monitor",
+    "pane"
+  ],
+  "userConfig": {
+    "watchPaths": {
+      "type": "string",
+      "multiple": true,
+      "title": "Folders to watch",
+      "description": "Where delegate run folders live. Each is absolute, or relative to the folder Claude Code was started in. $TMPDIR and ~ are expanded. Searched recursively.",
+      "default": [
+        "$TMPDIR/delegate-relay",
+        ".orchestrator",
+        ".superpowers"
+      ]
+    },
+    "searchDepth": {
+      "type": "number",
+      "title": "Search depth",
+      "description": "How many folder levels below each watched folder to search for run logs.",
+      "default": 6
+    },
+    "maxAgeHours": {
+      "type": "number",
+      "title": "Run age limit (hours)",
+      "description": "Only runs whose log changed within this many hours are shown.",
+      "default": 6
+    }
+  }
+}
