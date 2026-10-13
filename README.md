@@ -12,7 +12,7 @@ to watch; this plugin only reads what they write.
 
 ## What you see
 
-![The delegate-watch pane showing a running agent](docs/screenshots/pane.png)
+![The delegate-watch pane showing a running agent](docs/screenshots/Screenshot.png)
 
 - A chip per recent run (● running, ✓ done, ✗ failed), newest first.
 - A status card: agent badge, model, elapsed time, tool calls or model turns, files edited, cost.
