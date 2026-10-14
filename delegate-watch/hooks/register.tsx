@@ -271,7 +271,9 @@ export const register: Register = (on, options) => {
           if (!r.isDone && !finished.has(r.dir) && !announced.has(r.dir)) {
             announced.add(r.dir)
             hasOpened = true
-            void $.ui.open({ id: PANE, title: 'Delegates' })
+            void $.ui.open({ id: PANE, title: 'Delegates' }).then(o => {
+              if (!o.isPlaced) $.ui.toast(`delegate-watch: run started, type /delegate-watch to open the pane (${o.reason})`)
+            })
           }
           if (r.isDone && !finished.has(r.dir)) {
             finished.add(r.dir)
@@ -303,8 +305,8 @@ export const register: Register = (on, options) => {
       await $.ui.open({ id: PANE, title: 'Delegates' })
       return { text: 'Delegate watcher resumed.' }
     }
-    await $.ui.open({ id: PANE, title: 'Delegates' })
-    return { text: 'Delegates pane opened.' }
+    const opened = await $.ui.open({ id: PANE, title: 'Delegates' })
+    return { text: opened.isPlaced ? 'Delegates pane opened.' : `Delegates pane is open but not drawn: ${opened.reason}` }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -419,7 +421,7 @@ export const register: Register = (on, options) => {
         <Box gap={1} flexWrap="wrap">
           {list.map(r => (
             <Button key={r.dir} variant={r.dir === sel ? 'primary' : 'secondary'} onPress={() => pick(r)}>
-              {mark(r)} {r.agent} · {r.name}
+              {`${mark(r)} ${r.agent} · ${r.name}`}
             </Button>
           ))}
         </Box>
