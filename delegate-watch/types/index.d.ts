@@ -25,6 +25,15 @@ export type Run = {
   procs: { age: string; cmd: string; isHelper: boolean }[]
 }
 
+// the poll loop's pulse: when it last completed, how often it has run, and the last failure
+export type Beat = {
+  okAt: number
+  ticks: number
+  errors: number
+  error: string
+  errorAt: number
+}
+
 export type Filter = 'all' | 'tools' | 'say' | 'turns'
 
 declare module 'claude-code' {
@@ -38,6 +47,7 @@ declare module 'claude-code' {
       filter: Filter
       rowsPref: number
       expanded: string[]
+      beat: Beat
     }
   }
 }

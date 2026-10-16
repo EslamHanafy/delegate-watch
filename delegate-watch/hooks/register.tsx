@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Ev, Filter, Run } from '../types'
+import type { Beat, Ev, Filter, Run } from '../types'
+import { FRESH_BEAT, nextBeat, orElse, withTimeout } from './guard'
 import {
-  MAX_EVENTS, agentOf, ago, blockedOf, childrenOf, clock, editsSince, glyph, mixOf, parseAgyLines, parseLines, parseStat, rel, expandCap, fitRows, fitText, spark, splitPath, startOf, tintOf, topLines, weightOf,
+  MAX_EVENTS, agentOf, ago, beatLabel, blockedOf, childrenOf, clock, editsSince, glyph, mixOf, parseAgyLines, parseLines, parseStat, rel, expandCap, fitRows, fitText, spark, splitPath, startOf, tintOf, topLines, weightOf,
 } from './summarize'
 import type { Proc, Snap, Totals } from './summarize'
 
@@ -14,6 +15,9 @@ const FIND_EVERY = 3
 const IDLE_EVERY = 5
 const ROWS_STEP = 5
 const ROWS_MAX = 200
+const CALL_MS = 10_000
+const PROC_GUARD_MS = 3_000
+const REDRAW_MS = 5_000
 const MAX_READ = 8 * 1024 * 1024
 const STALE_MS = 15 * 60 * 1000
 const STAT = "if [ \"$(uname)\" = Darwin ]; then xargs -0 stat -f '%m %N'; else xargs -0 stat -c '%Y %n'; fi"
@@ -28,6 +32,7 @@ const paused = atom({ plugin: 'delegate-watch', key: 'paused' } as const, false)
 const filter = atom({ plugin: 'delegate-watch', key: 'filter' } as const, 'all' as Filter)
 const expanded = atom({ plugin: 'delegate-watch', key: 'expanded' } as const, [] as string[])
 const rowsPref = atom({ plugin: 'delegate-watch', key: 'rowsPref' } as const, -1)
+const beat = atom({ plugin: 'delegate-watch', key: 'beat' } as const, FRESH_BEAT as Beat)
 
 type Data = {
   offset: number
@@ -55,6 +60,7 @@ export const register: Register = (on, options) => {
   const announced = new Set<string>()
   let isPolling = false
   let hasOpened = false
+  let isPaneOpen = false
   let tick = 0
   let lastSig = ''
   let cands: { dir: string; name: string; mtime: number }[] = []
@@ -71,38 +77,66 @@ export const register: Register = (on, options) => {
     await update($, scroll, () => 0)
     await update($, paused, () => false)
     await update($, expanded, () => [])
+    await update($, beat, () => FRESH_BEAT)
     if ((await $.store.get('paused')) === true) await update($, paused, () => true)
     const savedRows = await $.store.get('timelineRows')
     await update($, rowsPref, () => (typeof savedRows === 'number' ? clampRows(savedRows) : configRows))
 
+    // every host call goes through here: one that never answers rejects after `ms` instead of holding the poll forever
+    const call = <T,>(label: string, work: Promise<T>, ms = CALL_MS): Promise<T> => withTimeout((n, fn) => $.clock.after(n, fn), work, ms, label)
+    // a process gets its own timeout first, the guard only catches a call that does not even honour that
+    const exec = (label: string, argv: string[], init: { cwd?: string; timeoutMs: number }) =>
+      call(label, $.process.run(argv, init), init.timeoutMs + PROC_GUARD_MS)
+
+    // records how a poll ended; best effort, it must never throw or it would defeat the point of a heartbeat
+    const recordBeat = async (failure: unknown): Promise<void> => {
+      try {
+        const at = await call('clock', $.clock.now()).catch(() => Date.now())
+        await call('heartbeat', update($, beat, prev => nextBeat({ ...FRESH_BEAT, ...prev }, failure, at)))
+      } catch {
+        // nothing left to report to
+      }
+    }
+
+    // while the pane is open its age label has to keep counting even if the poll is the thing that stopped
+    $.clock.every(REDRAW_MS, () => {
+      if (isPaneOpen) $.ui.invalidate('ui.render')
+    })
+
     $.clock.every(POLL_MS, async () => {
-      if (isPolling || (await read($, paused))) return
+      if (isPolling) return
       isPolling = true
       tick += 1
+      let failure: unknown = null
+      let isCounted = true
       try {
-        const cwd = await $.session.cwd()
-        const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')
-        const wasLive = (await read($, runs)).some(x => !x.isDone)
+        if (await call('paused', read($, paused))) {
+          isCounted = false
+          return
+        }
+        const cwd = await call('cwd', $.session.cwd())
+        const tmp = ((await call('env', $.env.get('TMPDIR'))) ?? '/tmp').replace(/\/$/, '')
+        const wasLive = (await call('runs', read($, runs))).some(x => !x.isDone)
         if (!wasLive && tick % IDLE_EVERY !== 0) return
-        const now = await $.clock.now()
+        const now = await call('clock', $.clock.now())
         const isSlow = tick % SLOW_EVERY === 0
 
         // discovery: one `find` for every run folder touched in the last 6 hours, refreshed every few ticks
         if (cands.length === 0 || tick % FIND_EVERY === 0 || tick <= 1) {
-          const home = (await $.env.get('HOME')) ?? ''
+          const home = (await call('env', $.env.get('HOME'))) ?? ''
           const roots = (watch.length > 0 ? watch : ['$TMPDIR/delegate-relay', '.orchestrator', '.superpowers']).map(x => {
             const abs = x.replace(/^\$TMPDIR/, tmp).replace(/^~/, home)
             return abs.startsWith('/') ? abs : `${cwd}/${abs}`
           })
-          const ran = await $.process
-            .run(
-              ['sh', '-c', `find ${roots.map(x => `'${x.replace(/'/g, '')}'`).join(' ')} -maxdepth ${depth} \\( -name events.jsonl -o -name agy.log \\) -mmin -${maxMin} -print0 2>/dev/null | ${STAT} 2>/dev/null`],
-              { timeoutMs: 8000 },
-            )
-            .catch(() => null)
+          // a failing `find` is not "nothing running": it throws so the heartbeat shows it
+          const ran = await exec(
+            'find',
+            ['sh', '-c', `find ${roots.map(x => `'${x.replace(/'/g, '')}'`).join(' ')} -maxdepth ${depth} \\( -name events.jsonl -o -name agy.log \\) -mmin -${maxMin} -print0 2>/dev/null | ${STAT} 2>/dev/null`],
+            { timeoutMs: 8000 },
+          )
           const seenDirs = new Set<string>()
           cands = []
-          for (const l of (ran?.stdout ?? '').split('\n')) {
+          for (const l of ran.stdout.split('\n')) {
             const sp = l.indexOf(' ')
             const path = l.slice(sp + 1)
             const dir = path.slice(0, path.lastIndexOf('/'))
@@ -115,7 +149,7 @@ export const register: Register = (on, options) => {
 
         const found: Run[] = []
         for (const c of cands.slice(0, maxRuns)) {
-          const files = await $.fs.list(c.dir).catch(() => [])
+          const files = await orElse(call('list', $.fs.list(c.dir)), [])
           const names = files.map(f => f.name)
           const logName = names.includes('agy.log') ? 'agy.log' : names.includes('events.jsonl') ? 'events.jsonl' : null
           if (logName === null) continue
@@ -123,7 +157,7 @@ export const register: Register = (on, options) => {
           const brief = files.find(f => f.name === 'brief.txt')
           let agent: Run['agent'] = agents.get(c.dir) ?? (logName === 'agy.log' ? 'agy' : 'unknown')
           if (agent === 'unknown' && log.size > 0) {
-            const head = await $.process.run(['head', '-c', '1500', `${c.dir}/events.jsonl`], { timeoutMs: 3000 }).catch(() => null)
+            const head = await exec('head', ['head', '-c', '1500', `${c.dir}/events.jsonl`], { timeoutMs: 3000 }).catch(() => null)
             agent = agentOf(names, head?.stdout ?? '')
             if (agent !== 'unknown') agents.set(c.dir, agent)
           }
@@ -138,7 +172,7 @@ export const register: Register = (on, options) => {
             let hit = results.get(c.dir)
             if (!hit) {
               try {
-                const result = JSON.parse(await $.fs.read(`${c.dir}/result.json`))
+                const result = JSON.parse(await call('read result', $.fs.read(`${c.dir}/result.json`)))
                 hit = {
                   status: String(result.status ?? 'done'),
                   touched: Array.isArray(result.touchedFiles) ? result.touchedFiles.length : null,
@@ -188,11 +222,11 @@ export const register: Register = (on, options) => {
         }
 
         // pick the run to show: the user's choice, else the newest running, else the newest
-        let sel = await read($, selected)
+        let sel = await call('selected', read($, selected))
         if (!found.some(r => r.dir === sel)) {
           sel = (found.find(r => !r.isDone) ?? found[0])?.dir ?? null
-          await update($, selected, () => sel)
-          await update($, scroll, () => 0)
+          await call('selected', update($, selected, () => sel))
+          await call('scroll', update($, scroll, () => 0))
         }
 
         // only the shown run is read, and only the bytes added since the last tick
@@ -200,12 +234,12 @@ export const register: Register = (on, options) => {
         if (run) {
           const d = data.get(run.dir)!
           const logFile = run.agent === 'agy' ? 'agy.log' : 'events.jsonl'
-          const files = await $.fs.list(run.dir).catch(() => [])
+          const files = await orElse(call('list', $.fs.list(run.dir)), [])
           const size = files.find(f => f.name === logFile)?.size ?? 0
           if (size > d.offset) {
             const from = Math.max(d.offset, size - MAX_READ)
             try {
-              const ran = await $.process.run(['tail', '-c', `+${from + 1}`, `${run.dir}/${logFile}`], { timeoutMs: 8000 })
+              const ran = await exec('tail', ['tail', '-c', `+${from + 1}`, `${run.dir}/${logFile}`], { timeoutMs: 8000 })
               let text = d.carry + ran.stdout
               if (d.offset === 0 && from > 0) text = text.slice(text.indexOf('\n') + 1)
               const cut = text.lastIndexOf('\n')
@@ -224,7 +258,8 @@ export const register: Register = (on, options) => {
             const repo = at > 0 ? run.dir.slice(0, at) : cwd
             try {
               if (d.snap === null || !run.isDone) {
-                const ran = await $.process.run(
+                const ran = await exec(
+                  'git',
                   ['sh', '-c', `git ls-files -m -o --exclude-standard -z | ${STAT} 2>/dev/null`],
                   { cwd: repo, timeoutMs: 8000 },
                 )
@@ -233,12 +268,13 @@ export const register: Register = (on, options) => {
                 d.snap = snap
               }
               if (!run.isDone && !run.dir.includes("'")) {
-                const ps = await $.process.run(
+                const ps = await exec(
+                  'ps',
                   ['sh', '-c', `pgrep -f '${run.dir}/[a]gy.log'; echo @@; ps -axo pid=,ppid=,etime=,command=`],
                   { timeoutMs: 5000 },
                 )
                 d.procs = childrenOf(ps.stdout)
-                d.blocked = blockedOf(await $.fs.read(`${run.dir}/stderr.txt`).catch(() => ''))
+                d.blocked = blockedOf(await orElse(call('read stderr', $.fs.read(`${run.dir}/stderr.txt`)), ''))
               } else {
                 d.procs = []
                 d.blocked = ''
@@ -259,18 +295,20 @@ export const register: Register = (on, options) => {
 
         const sig = `${sel}|${run ? data.get(run.dir)!.evs.length : 0}|${run?.blocked}|${run?.procs.map(x => x.age + x.cmd).join(',')}|${found.map(r => r.dir + r.status + r.updatedAt).join(',')}`
         if (sig !== lastSig) {
-          lastSig = sig
-          await update($, runs, () => found)
+          await call('write runs', update($, runs, () => found))
           if (run) {
             const list = data.get(run.dir)!.evs.slice().sort((a, b) => a.t - b.t)
-            await update($, events, () => list)
+            await call('write events', update($, events, () => list))
           }
+          // remembered only once both writes landed, so a failed write is retried on the next tick
+          lastSig = sig
         }
 
         for (const r of found) {
           if (!r.isDone && !finished.has(r.dir) && !announced.has(r.dir)) {
             announced.add(r.dir)
             hasOpened = true
+            isPaneOpen = true
             void $.ui.open({ id: PANE, title: 'Delegates' }).then(o => {
               if (!o.isPlaced) $.ui.toast(`delegate-watch: run started, type /delegate-watch to open the pane (${o.reason})`)
             })
@@ -282,8 +320,12 @@ export const register: Register = (on, options) => {
         }
         const live = found.filter(r => !r.isDone).length
         $.ui.status(live > 0 ? `${live} delegate${live > 1 ? 's' : ''} running` : undefined)
+      } catch (err) {
+        // whatever broke (a hung host call, a bad read) ends this poll only; the next tick starts clean
+        failure = err
       } finally {
         isPolling = false
+        if (isCounted) await recordBeat(failure)
       }
     })
     return next(e)
@@ -302,9 +344,11 @@ export const register: Register = (on, options) => {
       await $.store.set('paused', false)
       lastSig = ''
       cands = []
+      isPaneOpen = true
       await $.ui.open({ id: PANE, title: 'Delegates' })
       return { text: 'Delegate watcher resumed.' }
     }
+    isPaneOpen = true
     const opened = await $.ui.open({ id: PANE, title: 'Delegates' })
     return { text: opened.isPlaced ? 'Delegates pane opened.' : `Delegates pane is open but not drawn: ${opened.reason}` }
   })
@@ -329,6 +373,7 @@ export const register: Register = (on, options) => {
     const f = await read($, filter)
     const isPaused = await read($, paused)
     const now = await $.clock.now()
+    const pulse = beatLabel({ ...FRESH_BEAT, ...(await read($, beat)) }, now)
     const run = list.find(r => r.dir === sel)
     const isAgy = run?.agent === 'agy'
     const open = new Set(await read($, expanded))
@@ -408,7 +453,10 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column" gap={1}>
         <Box justifyContent="space-between">
           <Text bold color={isPaused ? 'yellow' : 'green'}>{isPaused ? '⏸ Watcher paused, not reading any files' : '● Watching delegates'}</Text>
-          <Button key="pause" variant={isPaused ? 'primary' : 'secondary'} onPress={toggle}>{isPaused ? 'Resume' : 'Pause'}</Button>
+          <Box gap={1} flexShrink={1} minWidth={0}>
+            {isPaused ? null : <Text color={pulse.color} bold={pulse.isWarn} wrap="truncate-end">{pulse.text}</Text>}
+            <Button key="pause" variant={isPaused ? 'primary' : 'secondary'} onPress={toggle}>{isPaused ? 'Resume' : 'Pause'}</Button>
+          </Box>
         </Box>
 
         {list.length === 0 && (

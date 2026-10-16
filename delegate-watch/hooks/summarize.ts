@@ -1,4 +1,4 @@
-import type { Ev, Run } from '../types'
+import type { Beat, Ev, Run } from '../types'
 
 const WIDTH = 200
 export const MAX_EVENTS = 4000
@@ -93,6 +93,19 @@ export const ago = (ms: number): string => {
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
   return m < 60 ? `${m}m${String(s % 60).padStart(2, '0')}s` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`
+}
+
+// longer than this since the last completed poll and the watcher looks stalled (a poll normally ends every 2s, every 10s when idle)
+export const STALL_MS = 30_000
+
+export type BeatLabel = { text: string; color: string; isWarn: boolean }
+
+// the watcher's pulse as one line for the pane header
+export const beatLabel = (b: Beat, now: number): BeatLabel => {
+  if (b.errorAt > b.okAt) return { text: `⚠ poll failed ${ago(now - b.errorAt)} ago: ${b.error}`, color: 'red', isWarn: true }
+  if (b.ticks === 0 || b.okAt === 0) return { text: 'starting…', color: 'gray', isWarn: false }
+  const age = now - b.okAt
+  return age > STALL_MS ? { text: `⚠ stalled, last refresh ${ago(age)} ago`, color: 'yellow', isWarn: true } : { text: `refreshed ${ago(age)} ago`, color: 'gray', isWarn: false }
 }
 
 export const clock = (ms: number): string => (ms > 0 ? new Date(ms).toTimeString().slice(0, 8) : '        ')
