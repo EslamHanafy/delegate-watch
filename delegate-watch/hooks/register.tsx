@@ -7,6 +7,8 @@ import {
   MAX_EVENTS, agentOf, ago, beatLabel, blockedOf, childrenOf, clock, editsSince, glyph, mixOf, parseAgyLines, parseLines, parseStat, rel, expandCap, fitRows, fitText, spark, splitPath, startOf, tintOf, topLines, weightOf,
 } from './summarize'
 import type { Proc, Snap, Totals } from './summarize'
+import { anchorsOf, mergeCands, resolveRoots, searchedHint } from './roots'
+import type { Cand } from './roots'
 
 const PANE = 'delegate-watch'
 const POLL_MS = 2000
@@ -33,6 +35,10 @@ const filter = atom({ plugin: 'delegate-watch', key: 'filter' } as const, 'all' 
 const expanded = atom({ plugin: 'delegate-watch', key: 'expanded' } as const, [] as string[])
 const rowsPref = atom({ plugin: 'delegate-watch', key: 'rowsPref' } as const, -1)
 const beat = atom({ plugin: 'delegate-watch', key: 'beat' } as const, FRESH_BEAT as Beat)
+// the cwd the session started in: kept in session state so a reload (which runs session.start again) does not move it
+const startCwd = atom({ plugin: 'delegate-watch', key: 'startCwd' } as const, '')
+// the absolute folders the last search looked in, shown when it found nothing
+const searched = atom({ plugin: 'delegate-watch', key: 'searched' } as const, [] as string[])
 
 type Data = {
   offset: number
@@ -63,7 +69,11 @@ export const register: Register = (on, options) => {
   let isPaneOpen = false
   let tick = 0
   let lastSig = ''
-  let cands: { dir: string; name: string; mtime: number }[] = []
+  let cands: Cand[] = []
+  // run folders whose log is no longer there; a search that finds one again brings it back
+  const gone = new Set<string>()
+  // repository root per folder (null when the folder is not in a git work tree)
+  const gitTops = new Map<string, string | null>()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -78,6 +88,9 @@ export const register: Register = (on, options) => {
     await update($, paused, () => false)
     await update($, expanded, () => [])
     await update($, beat, () => FRESH_BEAT)
+    await update($, searched, () => [])
+    const firstCwd = await $.session.cwd()
+    await update($, startCwd, prev => prev || firstCwd)
     if ((await $.store.get('paused')) === true) await update($, paused, () => true)
     const savedRows = await $.store.get('timelineRows')
     await update($, rowsPref, () => (typeof savedRows === 'number' ? clampRows(savedRows) : configRows))
@@ -87,6 +100,14 @@ export const register: Register = (on, options) => {
     // a process gets its own timeout first, the guard only catches a call that does not even honour that
     const exec = (label: string, argv: string[], init: { cwd?: string; timeoutMs: number }) =>
       call(label, $.process.run(argv, init), init.timeoutMs + PROC_GUARD_MS)
+    // the repository root of a folder, asked once per folder; null outside a work tree or when git fails
+    const topOf = async (dir: string): Promise<string | null> => {
+      if (gitTops.has(dir)) return gitTops.get(dir) ?? null
+      const ran = await exec('git root', ['git', '-C', dir, 'rev-parse', '--show-toplevel'], { timeoutMs: 3000 }).catch(() => null)
+      const top = ran?.stdout.trim() || null
+      gitTops.set(dir, top)
+      return top
+    }
 
     // records how a poll ended; best effort, it must never throw or it would defeat the point of a heartbeat
     const recordBeat = async (failure: unknown): Promise<void> => {
@@ -124,10 +145,10 @@ export const register: Register = (on, options) => {
         // discovery: one `find` for every run folder touched in the last 6 hours, refreshed every few ticks
         if (cands.length === 0 || tick % FIND_EVERY === 0 || tick <= 1) {
           const home = (await call('env', $.env.get('HOME'))) ?? ''
-          const roots = (watch.length > 0 ? watch : ['$TMPDIR/delegate-relay', '.orchestrator', '.superpowers']).map(x => {
-            const abs = x.replace(/^\$TMPDIR/, tmp).replace(/^~/, home)
-            return abs.startsWith('/') ? abs : `${cwd}/${abs}`
-          })
+          // relative paths are resolved against the repository root and the start cwd too: the live cwd moves
+          const anchors = anchorsOf(await call('start cwd', read($, startCwd)), cwd, await topOf(cwd))
+          const roots = resolveRoots(watch.length > 0 ? watch : ['$TMPDIR/delegate-relay', '.orchestrator', '.superpowers'], anchors, tmp, home)
+          await call('searched', update($, searched, () => roots))
           // a failing `find` is not "nothing running": it throws so the heartbeat shows it
           const ran = await exec(
             'find',
@@ -135,16 +156,17 @@ export const register: Register = (on, options) => {
             { timeoutMs: 8000 },
           )
           const seenDirs = new Set<string>()
-          cands = []
+          const fresh: Cand[] = []
           for (const l of ran.stdout.split('\n')) {
             const sp = l.indexOf(' ')
             const path = l.slice(sp + 1)
             const dir = path.slice(0, path.lastIndexOf('/'))
             if (sp < 1 || dir === '' || seenDirs.has(dir)) continue
             seenDirs.add(dir)
-            cands.push({ dir, name: dir.slice(dir.lastIndexOf('/') + 1), mtime: Number(l.slice(0, sp)) * 1000 })
+            fresh.push({ dir, name: dir.slice(dir.lastIndexOf('/') + 1), mtime: Number(l.slice(0, sp)) * 1000 })
           }
-          cands.sort((x, y) => y.mtime - x.mtime)
+          for (const c of fresh) gone.delete(c.dir)
+          cands = mergeCands(cands, fresh, gone, now - maxMin * 60_000)
         }
 
         const found: Run[] = []
@@ -152,8 +174,13 @@ export const register: Register = (on, options) => {
           const files = await orElse(call('list', $.fs.list(c.dir)), [])
           const names = files.map(f => f.name)
           const logName = names.includes('agy.log') ? 'agy.log' : names.includes('events.jsonl') ? 'events.jsonl' : null
-          if (logName === null) continue
+          if (logName === null) {
+            // the folder or its log went away: stop keeping it until a search finds it again
+            gone.add(c.dir)
+            continue
+          }
           const log = files.find(f => f.name === logName)!
+          c.mtime = log.mtimeMs
           const brief = files.find(f => f.name === 'brief.txt')
           let agent: Run['agent'] = agents.get(c.dir) ?? (logName === 'agy.log' ? 'agy' : 'unknown')
           if (agent === 'unknown' && log.size > 0) {
@@ -221,6 +248,8 @@ export const register: Register = (on, options) => {
           })
         }
 
+        if (gone.size > 0) cands = cands.filter(c => !gone.has(c.dir))
+
         // pick the run to show: the user's choice, else the newest running, else the newest
         let sel = await call('selected', read($, selected))
         if (!found.some(r => r.dir === sel)) {
@@ -254,8 +283,8 @@ export const register: Register = (on, options) => {
             }
           }
           if (run.agent === 'agy' && (isSlow || d.snap === null)) {
-            const at = run.dir.indexOf('/.orchestrator/')
-            const repo = at > 0 ? run.dir.slice(0, at) : cwd
+            // the run's own repository, not the live cwd (which may be a subfolder or another checkout)
+            const repo = (await topOf(run.dir)) ?? cwd
             try {
               if (d.snap === null || !run.isDone) {
                 const ran = await exec(
@@ -296,10 +325,9 @@ export const register: Register = (on, options) => {
         const sig = `${sel}|${run ? data.get(run.dir)!.evs.length : 0}|${run?.blocked}|${run?.procs.map(x => x.age + x.cmd).join(',')}|${found.map(r => r.dir + r.status + r.updatedAt).join(',')}`
         if (sig !== lastSig) {
           await call('write runs', update($, runs, () => found))
-          if (run) {
-            const list = data.get(run.dir)!.evs.slice().sort((a, b) => a.t - b.t)
-            await call('write events', update($, events, () => list))
-          }
+          // no run shown: clear the timeline too, so an empty run list never sits above an old timeline
+          const list = run ? data.get(run.dir)!.evs.slice().sort((a, b) => a.t - b.t) : []
+          await call('write events', update($, events, () => list))
           // remembered only once both writes landed, so a failed write is retried on the next tick
           lastSig = sig
         }
@@ -344,6 +372,8 @@ export const register: Register = (on, options) => {
       await $.store.set('paused', false)
       lastSig = ''
       cands = []
+      gone.clear()
+      gitTops.clear()
       isPaneOpen = true
       await $.ui.open({ id: PANE, title: 'Delegates' })
       return { text: 'Delegate watcher resumed.' }
@@ -372,6 +402,7 @@ export const register: Register = (on, options) => {
     const back = await read($, scroll)
     const f = await read($, filter)
     const isPaused = await read($, paused)
+    const hint = searchedHint(await read($, searched))
     const now = await $.clock.now()
     const pulse = beatLabel({ ...FRESH_BEAT, ...(await read($, beat)) }, now)
     const run = list.find(r => r.dir === sel)
@@ -443,6 +474,8 @@ export const register: Register = (on, options) => {
       else {
         lastSig = ''
         cands = []
+        gone.clear()
+        gitTops.clear()
       }
     }
     const mixTotal = mix.reduce((n, [, c]) => n + c, 0)
@@ -463,6 +496,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={2} paddingY={1}>
             <Text bold>No delegate runs yet</Text>
             <Text dimColor>Dispatch one with /agy-delegate, /cursor-delegate or /opencode-delegate and it shows up here.</Text>
+            {hint === null ? null : <Text dimColor>{hint}</Text>}
           </Box>
         )}
 

@@ -48,6 +48,8 @@ declare module 'claude-code' {
       rowsPref: number
       expanded: string[]
       beat: Beat
+      startCwd: string
+      searched: string[]
     }
   }
 }
