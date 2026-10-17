@@ -21,7 +21,8 @@ const detailOf = (input: unknown): string => {
   return typeof pick === 'string' ? pick : ''
 }
 
-export type Totals = { tools: number; cost: number; turns: number; lastTurn: number; think: string }
+// `names` maps a Claude tool_use id to its tool name, so a failed tool_result can name the tool; created on first use
+export type Totals = { tools: number; cost: number; turns: number; lastTurn: number; think: string; names?: Record<string, string> }
 
 const shorten = (p: string): string => {
   const rel = p.replace(/^\/Users\/[^/]+\/(?:[^/]+\/)*?(?=(?:lib|test|src|backend|frontend|docs|app|packages|assets|scripts|tests)\/)/, '')
@@ -32,7 +33,32 @@ const shorten = (p: string): string => {
 
 const firstLine = (text: string): string => clip((text.split('\n')[0] ?? '').trim())
 
-export const parseLines = (lines: string[], out: Ev[], totals: Totals): void => {
+// one Claude Code stream-json `assistant` message: every text, non-empty thought and tool call becomes a row
+const parseClaudeAssistant = (content: any[], t: number, out: Ev[], totals: Totals): void => {
+  for (const p of content) {
+    if (p?.type === 'text' && typeof p.text === 'string' && p.text.trim()) {
+      out.push({ t, kind: 'say', tag: 'say', text: clipLong(p.text) })
+    } else if (p?.type === 'thinking' && typeof p.thinking === 'string' && p.thinking.trim()) {
+      out.push({ t, kind: 'think', tag: 'think', text: clipLong(p.thinking) })
+    } else if (p?.type === 'tool_use' && typeof p.name === 'string') {
+      if (typeof p.id === 'string') (totals.names ??= {})[p.id] = p.name
+      totals.tools += 1
+      out.push({ t, kind: 'tool', tag: p.name, text: shorten(firstLine(detailOf(p.input))) })
+    }
+  }
+}
+
+// one Claude Code stream-json `user` message: a failed tool result becomes an error row named after its tool
+const parseClaudeUser = (content: any[], t: number, out: Ev[], totals: Totals): void => {
+  for (const p of content) {
+    if (p?.type !== 'tool_result' || p.is_error !== true) continue
+    const body = typeof p.content === 'string' ? p.content : Array.isArray(p.content) ? String(p.content.find((c: any) => c?.type === 'text')?.text ?? '') : ''
+    out.push({ t, kind: 'err', tag: totals.names?.[p.tool_use_id] ?? 'tool', text: firstLine(body) })
+  }
+}
+
+// `fallbackT` stamps events whose log line carries no time (Claude Code stream-json has none): the caller passes the read time
+export const parseLines = (lines: string[], out: Ev[], totals: Totals, fallbackT = 0): void => {
   for (const raw of lines) {
     if (!raw.startsWith('{')) continue
     let ev: any
@@ -41,7 +67,7 @@ export const parseLines = (lines: string[], out: Ev[], totals: Totals): void => 
     } catch {
       continue
     }
-    const t = Number(ev.timestamp_ms ?? ev.timestamp ?? 0)
+    const t = Number(ev.timestamp_ms ?? ev.timestamp ?? 0) || fallbackT
     if (ev.type === 'step_finish' && typeof ev.part?.cost === 'number') {
       totals.cost += ev.part.cost
     } else if (ev.type === 'tool_use' && ev.part) {
@@ -56,8 +82,13 @@ export const parseLines = (lines: string[], out: Ev[], totals: Totals): void => 
     } else if (ev.type === 'text' && typeof ev.part?.text === 'string' && ev.part.text.trim()) {
       out.push({ t, kind: 'say', tag: 'say', text: clipLong(ev.part.text) })
     } else if (ev.type === 'assistant' && Array.isArray(ev.message?.content)) {
-      const text = ev.message.content.find((p: any) => p?.type === 'text')?.text
-      if (typeof text === 'string' && text.trim()) out.push({ t, kind: 'say', tag: 'say', text: clipLong(text) })
+      // cursor-agent sends text parts only; Claude Code also sends its tool calls and thoughts here
+      parseClaudeAssistant(ev.message.content, t, out, totals)
+    } else if (ev.type === 'user' && Array.isArray(ev.message?.content)) {
+      parseClaudeUser(ev.message.content, t, out, totals)
+    } else if (ev.type === 'result' && typeof ev.total_cost_usd === 'number') {
+      // Claude Code's final event carries the whole run's cost, not an increment
+      totals.cost = ev.total_cost_usd
     } else if (ev.type === 'thinking') {
       if (ev.subtype === 'delta' && typeof ev.text === 'string') totals.think += ev.text
       if (ev.subtype === 'completed') {
@@ -76,6 +107,8 @@ export const parseLines = (lines: string[], out: Ev[], totals: Totals): void => 
 
 export const agentOf = (names: string[], head: string): Run['agent'] => {
   if (names.includes('agy.log')) return 'agy'
+  // Claude Code's stream opens with hook events or its init line; both are checked before cursor's `session_id`
+  if (head.includes('"claude_code_version"') || head.includes('"hook_event"')) return 'claude'
   if (head.includes('"session_id"')) return 'cursor'
   if (head.includes('"sessionID"')) return 'opencode'
   return 'unknown'

@@ -217,7 +217,9 @@ export const register: Register = (on, options) => {
             model = hit.model
             started = hit.started
             finishedAt = hit.finishedAt
-          } else if (names.includes('final.txt')) {
+          } else if (names.includes('final.txt') && agent !== 'claude' && !names.includes('profile.json')) {
+            // the Claude relay (its folder alone has profile.json) creates an empty final.txt when the run starts,
+            // so only result.json ends a Claude run, also before its first event names the agent
             isDone = true
             status = 'finished'
           } else if (now - log.mtimeMs > STALE_MS && agent !== 'agy') {
@@ -275,7 +277,7 @@ export const register: Register = (on, options) => {
               d.carry = cut >= 0 ? text.slice(cut + 1) : text
               const lines = cut >= 0 ? text.slice(0, cut).split('\n') : []
               if (run.agent === 'agy') parseAgyLines(lines, d.evs, d.totals, new Date(now).getFullYear())
-              else parseLines(lines, d.evs, d.totals)
+              else parseLines(lines, d.evs, d.totals, now)
               d.offset = size
               d.note = ''
             } catch {
@@ -434,7 +436,7 @@ export const register: Register = (on, options) => {
     const rows = timelineRows > 0 ? timelineRows : fitRows(shown, end, budget, open, idOf, textCols)
     const view = shown.slice(Math.max(0, end - rows), end)
     const step = Math.max(1, Math.floor(rows / 2))
-    const brand = { agy: '#60a5fa', cursor: '#94a3b8', opencode: '#34d399', unknown: 'gray' }
+    const brand = { agy: '#60a5fa', claude: '#d97757', cursor: '#94a3b8', opencode: '#34d399', unknown: 'gray' }
     const tone = !run
       ? 'gray'
       : run.status === 'running' || run.status.startsWith('stalled')
@@ -495,7 +497,7 @@ export const register: Register = (on, options) => {
         {list.length === 0 && (
           <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={2} paddingY={1}>
             <Text bold>No delegate runs yet</Text>
-            <Text dimColor>Dispatch one with /agy-delegate, /cursor-delegate or /opencode-delegate and it shows up here.</Text>
+            <Text dimColor>Dispatch one with /agy-delegate, /claude-delegate, /cursor-delegate or /opencode-delegate and it shows up here.</Text>
             {hint === null ? null : <Text dimColor>{hint}</Text>}
           </Box>
         )}

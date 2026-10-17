@@ -8,7 +8,7 @@ export type Ev = {
 export type Run = {
   dir: string
   name: string
-  agent: 'agy' | 'cursor' | 'opencode' | 'unknown'
+  agent: 'agy' | 'claude' | 'cursor' | 'opencode' | 'unknown'
   model: string
   startedAt: number
   finishedAt: number

@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { blockedOf, childrenOf, expandCap, fitRows, fitText, topLines, weightOf, parseAgyLines, parseLines, parseStat, editsSince } from './summarize'
+import { agentOf, blockedOf, childrenOf, expandCap, fitRows, fitText, topLines, weightOf, parseAgyLines, parseLines, parseStat, editsSince } from './summarize'
 
 test('opencode events become tool and say rows', () => {
   const out: any[] = []
@@ -117,4 +117,31 @@ test('an expanded message is capped so it cannot push the other rows out', () =>
   expect(fitRows(evs, 7, 20, new Set(['0']), id, 40)).toBe(7)
   expect(fitText('a'.repeat(100), 2, 10).endsWith('…')).toBe(true)
   expect(fitText('short', 2, 10)).toBe('short')
+})
+
+test('Claude Code stream-json: detected, tool calls, thoughts, errors and cost', () => {
+  expect(agentOf(['events.jsonl'], '{"type":"system","subtype":"hook_started","hook_event":"SessionStart","session_id":"s"}')).toBe('claude')
+  expect(agentOf(['events.jsonl'], '{"type":"system","subtype":"init","session_id":"s","model":"m","claude_code_version":"2.1.302"}')).toBe('claude')
+  expect(agentOf(['events.jsonl'], '{"type":"system","subtype":"init","session_id":"s","model":"m"}')).toBe('cursor')
+  const out: any[] = []
+  const totals: any = { tools: 0, cost: 0, turns: 0, lastTurn: 0, think: '' }
+  parseLines(
+    [
+      '{"type":"system","subtype":"thinking_tokens","estimated_tokens":50}',
+      '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"reading first"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls tests\\nmore"}}]}}',
+      '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"plan it"},{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/Users/me/p/backend/src/A.cs"}}]}}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"},{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":[{"type":"text","text":"File does not exist."}]}]}}',
+      '{"type":"result","subtype":"success","total_cost_usd":0.25}',
+    ],
+    out,
+    totals,
+    1234,
+  )
+  expect(out.map(x => `${x.kind}:${x.tag}`)).toEqual(['say:say', 'tool:Bash', 'think:think', 'tool:Read', 'err:Read'])
+  expect(out[1].text).toBe('ls tests')
+  expect(out[3].text).toBe('backend/src/A.cs')
+  expect(out[4].text).toBe('File does not exist.')
+  expect(out.every(x => x.t === 1234)).toBe(true)
+  expect(totals.tools).toBe(2)
+  expect(totals.cost).toBe(0.25)
 })

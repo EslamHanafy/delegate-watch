@@ -4,10 +4,10 @@ A live pane for [Claude Code](https://claude.com/claude-code) that shows what yo
 agents are doing **while they work**, instead of leaving you blind until they finish.
 
 It watches runs started by relay-style delegate scripts for **agy** (Google Antigravity),
-**cursor-agent** and **opencode**, and works in both the terminal CLI and the desktop app.
+**Claude Code** (`claude -p`), **cursor-agent** and **opencode**, and works in both the terminal CLI and the desktop app.
 
 It is built around the run folders written by the [delegate-skills](https://github.com/amElnagdy/delegate-skills)
-relay scripts (`/agy-delegate`, `/cursor-delegate`, `/opencode-delegate`). Install those skills to get runs
+relay scripts (`/agy-delegate`, `/claude-delegate`, `/cursor-delegate`, `/opencode-delegate`). Install those skills to get runs
 to watch; this plugin only reads what they write.
 
 ## What you see
@@ -26,6 +26,7 @@ to watch; this plugin only reads what they write.
 
 | Agent | Source | What is shown |
 | --- | --- | --- |
+| Claude Code | `events.jsonl` (stream-json) | every tool call, message, visible thought, failed tool result, and the run's cost |
 | cursor-agent | `events.jsonl` (stream-json) | every tool call, message and thought |
 | opencode | `events.jsonl` | every tool call, message, error, and cost |
 | agy | `agy.log`, `stderr.txt`, `git`, `ps` | model turns, files it edited since start, idle/blocked state, commands running under agy |
@@ -98,7 +99,7 @@ Changes apply on the next `/reload-plugins` (or new session).
 
 ### What counts as a run
 
-Any folder under a watched path that contains `events.jsonl` (cursor-agent, opencode) or `agy.log`
+Any folder under a watched path that contains `events.jsonl` (Claude Code, cursor-agent, opencode) or `agy.log`
 (agy). The pane also reads `result.json`, `final.txt`, `brief.txt` and `stderr.txt` in that folder
 when present. If your delegate scripts write somewhere else, point `watchPaths` at it. Start Claude
 Code in the project whose delegates you want to watch, so relative paths resolve there.
